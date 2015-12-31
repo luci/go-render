@@ -31,18 +31,20 @@ var implicitTypeMap = map[reflect.Kind]string{
 	reflect.Complex128: "complex128",
 }
 
-// DeepRender converts a structure to a string representation. Unline the "%#v"
+// Render converts a structure to a string representation. Unline the "%#v"
 // format string, this resolves pointer types' contents in structs, maps, and
 // slices/arrays and prints their field values.
-func DeepRender(v interface{}) string {
+func Render(v interface{}) string {
 	buf := bytes.Buffer{}
 	s := (*traverseState)(nil)
-	s.deepRender(&buf, 0, reflect.ValueOf(v))
+	s.render(&buf, 0, reflect.ValueOf(v))
 	return buf.String()
 }
 
-// renderPointer is overridable by the test suite in order to have deterministic
-// pointer values.
+// renderPointer is called to render a pointer value.
+//
+// This is overridable so that the test suite can have deterministic pointer
+// values in its expectations.
 var renderPointer = func(buf *bytes.Buffer, p uintptr) {
 	fmt.Fprintf(buf, "0x%016x", p)
 }
@@ -70,7 +72,7 @@ func (s *traverseState) forkFor(ptr uintptr) *traverseState {
 	return fs
 }
 
-func (s *traverseState) deepRender(buf *bytes.Buffer, ptrs int, v reflect.Value) {
+func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value) {
 	if v.Kind() == reflect.Invalid {
 		buf.WriteString("nil")
 		return
@@ -122,7 +124,7 @@ func (s *traverseState) deepRender(buf *bytes.Buffer, ptrs int, v reflect.Value)
 			buf.WriteString(vt.Field(i).Name)
 			buf.WriteRune(':')
 
-			s.deepRender(buf, 0, v.Field(i))
+			s.render(buf, 0, v.Field(i))
 		}
 		buf.WriteRune('}')
 
@@ -142,7 +144,7 @@ func (s *traverseState) deepRender(buf *bytes.Buffer, ptrs int, v reflect.Value)
 				buf.WriteString(", ")
 			}
 
-			s.deepRender(buf, 0, v.Index(i))
+			s.render(buf, 0, v.Index(i))
 		}
 		buf.WriteRune('}')
 
@@ -161,9 +163,9 @@ func (s *traverseState) deepRender(buf *bytes.Buffer, ptrs int, v reflect.Value)
 					buf.WriteString(", ")
 				}
 
-				s.deepRender(buf, 0, mk)
+				s.render(buf, 0, mk)
 				buf.WriteString(":")
-				s.deepRender(buf, 0, v.MapIndex(mk))
+				s.render(buf, 0, v.MapIndex(mk))
 			}
 			buf.WriteRune('}')
 		}
@@ -178,7 +180,7 @@ func (s *traverseState) deepRender(buf *bytes.Buffer, ptrs int, v reflect.Value)
 			fmt.Fprint(buf, "nil")
 			buf.WriteRune(')')
 		} else {
-			s.deepRender(buf, ptrs, v.Elem())
+			s.render(buf, ptrs, v.Elem())
 		}
 
 	case reflect.Chan, reflect.Func, reflect.UnsafePointer:
