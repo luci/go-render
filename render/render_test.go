@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -7,6 +7,7 @@ package render
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"regexp"
 	"runtime"
 	"testing"
@@ -81,7 +82,7 @@ func TestRenderList(t *testing.T) {
 		{struct {
 			a int
 			b string
-		}{123, "foo"}, `struct { a int; b string }{a:123, b:"foo"}`},
+		}{123, "foo"}, `struct { a int; b string }{123, "foo"}`},
 		{[]string{"foo", "foo", "bar", "baz", "qux", "qux"},
 			`[]string{"foo", "foo", "bar", "baz", "qux", "qux"}`},
 		{[...]int{1, 2, 3}, `[3]int{1, 2, 3}`},
@@ -133,12 +134,46 @@ func TestRenderRecursiveMap(t *testing.T) {
 	v := []map[string]interface{}{m, m}
 
 	assertRendersLike(t, "Recursive map", v,
-		`[]map[string]interface{}{map[string]interface{}{`+
+		`[]map[string]interface{}{{`+
 			`"bar":[]*string{(*string)("foo"), (*string)("foo")}, `+
-			`"foo":<REC(map[string]interface{})>}, `+
-			`map[string]interface{}{`+
+			`"foo":<REC(map[string]interface{})>}, {`+
 			`"bar":[]*string{(*string)("foo"), (*string)("foo")}, `+
 			`"foo":<REC(map[string]interface{})>}}`)
+}
+
+func TestRenderImplicitType(t *testing.T) {
+	type namedStruct struct{ a, b int }
+	type namedInt int
+
+	tcs := []struct {
+		in     interface{}
+		expect string
+	}{
+		{
+			[]struct{ a, b int }{{1, 2}},
+			"[]struct { a int; b int }{{1, 2}}",
+		},
+		{
+			map[string]struct{ a, b int }{"hi": {1, 2}},
+			`map[string]struct { a int; b int }{"hi":{1, 2}}`,
+		},
+		{
+			map[namedInt]struct{}{10: {}},
+			`map[render.namedInt]struct {}{10:{}}`,
+		},
+		{
+			struct{ a, b int }{1, 2},
+			`struct { a int; b int }{1, 2}`,
+		},
+		{
+			namedStruct{1, 2},
+			"render.namedStruct{a:1, b:2}",
+		},
+	}
+
+	for _, tc := range tcs {
+		assertRendersLike(t, reflect.TypeOf(tc.in).String(), tc.in, tc.expect)
+	}
 }
 
 func ExampleInReadme() {

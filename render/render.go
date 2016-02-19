@@ -12,24 +12,38 @@ import (
 	"strconv"
 )
 
-var implicitTypeMap = map[reflect.Kind]string{
+var builtinTypeMap = map[reflect.Kind]string{
 	reflect.Bool:       "bool",
-	reflect.String:     "string",
-	reflect.Int:        "int",
-	reflect.Int8:       "int8",
+	reflect.Complex128: "complex128",
+	reflect.Complex64:  "complex64",
+	reflect.Float32:    "float32",
+	reflect.Float64:    "float64",
 	reflect.Int16:      "int16",
 	reflect.Int32:      "int32",
 	reflect.Int64:      "int64",
-	reflect.Uint:       "uint",
-	reflect.Uint8:      "uint8",
+	reflect.Int8:       "int8",
+	reflect.Int:        "int",
+	reflect.String:     "string",
 	reflect.Uint16:     "uint16",
 	reflect.Uint32:     "uint32",
 	reflect.Uint64:     "uint64",
-	reflect.Float32:    "float32",
-	reflect.Float64:    "float64",
-	reflect.Complex64:  "complex64",
-	reflect.Complex128: "complex128",
+	reflect.Uint8:      "uint8",
+	reflect.Uint:       "uint",
+	reflect.Uintptr:    "uintptr",
 }
+
+var builtinTypeSet = map[string]struct{}{}
+
+func init() {
+	for _, v := range builtinTypeMap {
+		builtinTypeSet[v] = struct{}{}
+	}
+}
+
+var typeOfString = reflect.TypeOf("")
+var typeOfInt = reflect.TypeOf(int(1))
+var typeOfUint = reflect.TypeOf(uint(1))
+var typeOfFloat = reflect.TypeOf(10.1)
 
 // Render converts a structure to a string representation. Unline the "%#v"
 // format string, this resolves pointer types' contents in structs, maps, and
@@ -37,7 +51,7 @@ var implicitTypeMap = map[reflect.Kind]string{
 func Render(v interface{}) string {
 	buf := bytes.Buffer{}
 	s := (*traverseState)(nil)
-	s.render(&buf, 0, reflect.ValueOf(v))
+	s.render(&buf, 0, reflect.ValueOf(v), false)
 	return buf.String()
 }
 
@@ -72,7 +86,7 @@ func (s *traverseState) forkFor(ptr uintptr) *traverseState {
 	return fs
 }
 
-func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value) {
+func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value, implicit bool) {
 	if v.Kind() == reflect.Invalid {
 		buf.WriteString("nil")
 		return
@@ -107,49 +121,76 @@ func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value) {
 		s = s.forkFor(pe)
 		if s == nil {
 			buf.WriteString("<REC(")
-			writeType(buf, ptrs, vt)
+			if !implicit {
+				writeType(buf, ptrs, vt)
+			}
 			buf.WriteString(")>")
 			return
 		}
 	}
 
+	isAnon := func(t reflect.Type) bool {
+		if t.Name() != "" {
+			if _, ok := builtinTypeSet[t.Name()]; !ok {
+				return false
+			}
+		}
+		return t.Kind() != reflect.Interface
+	}
+
 	switch vk {
 	case reflect.Struct:
-		writeType(buf, ptrs, vt)
+		if !implicit {
+			writeType(buf, ptrs, vt)
+		}
+		structAnon := vt.Name() == ""
 		buf.WriteRune('{')
 		for i := 0; i < vt.NumField(); i++ {
 			if i > 0 {
 				buf.WriteString(", ")
 			}
-			buf.WriteString(vt.Field(i).Name)
-			buf.WriteRune(':')
+			anon := structAnon && isAnon(vt.Field(i).Type)
 
-			s.render(buf, 0, v.Field(i))
+			if !anon {
+				buf.WriteString(vt.Field(i).Name)
+				buf.WriteRune(':')
+			}
+
+			s.render(buf, 0, v.Field(i), anon)
 		}
 		buf.WriteRune('}')
 
 	case reflect.Slice:
 		if v.IsNil() {
-			writeType(buf, ptrs, vt)
-			buf.WriteString("(nil)")
+			if !implicit {
+				writeType(buf, ptrs, vt)
+				buf.WriteString("(nil)")
+			} else {
+				buf.WriteString("nil")
+			}
 			return
 		}
 		fallthrough
 
 	case reflect.Array:
-		writeType(buf, ptrs, vt)
+		if !implicit {
+			writeType(buf, ptrs, vt)
+		}
+		anon := vt.Name() == "" && isAnon(vt.Elem())
 		buf.WriteString("{")
 		for i := 0; i < v.Len(); i++ {
 			if i > 0 {
 				buf.WriteString(", ")
 			}
 
-			s.render(buf, 0, v.Index(i))
+			s.render(buf, 0, v.Index(i), anon)
 		}
 		buf.WriteRune('}')
 
 	case reflect.Map:
-		writeType(buf, ptrs, vt)
+		if !implicit {
+			writeType(buf, ptrs, vt)
+		}
 		if v.IsNil() {
 			buf.WriteString("(nil)")
 		} else {
@@ -158,14 +199,17 @@ func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value) {
 			mkeys := v.MapKeys()
 			tryAndSortMapKeys(vt, mkeys)
 
+			kt := vt.Key()
+			keyAnon := typeOfString.ConvertibleTo(kt) || typeOfInt.ConvertibleTo(kt) || typeOfUint.ConvertibleTo(kt) || typeOfFloat.ConvertibleTo(kt)
+			valAnon := vt.Name() == "" && isAnon(vt.Elem())
 			for i, mk := range mkeys {
 				if i > 0 {
 					buf.WriteString(", ")
 				}
 
-				s.render(buf, 0, mk)
+				s.render(buf, 0, mk, keyAnon)
 				buf.WriteString(":")
-				s.render(buf, 0, v.MapIndex(mk))
+				s.render(buf, 0, v.MapIndex(mk), valAnon)
 			}
 			buf.WriteRune('}')
 		}
@@ -176,11 +220,9 @@ func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value) {
 	case reflect.Interface:
 		if v.IsNil() {
 			writeType(buf, ptrs, v.Type())
-			buf.WriteRune('(')
-			fmt.Fprint(buf, "nil")
-			buf.WriteRune(')')
+			buf.WriteString("(nil)")
 		} else {
-			s.render(buf, ptrs, v.Elem())
+			s.render(buf, ptrs, v.Elem(), false)
 		}
 
 	case reflect.Chan, reflect.Func, reflect.UnsafePointer:
@@ -191,7 +233,7 @@ func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value) {
 
 	default:
 		tstr := vt.String()
-		implicit := ptrs == 0 && implicitTypeMap[vk] == tstr
+		implicit = implicit || (ptrs == 0 && builtinTypeMap[vk] == tstr)
 		if !implicit {
 			writeType(buf, ptrs, vt)
 			buf.WriteRune('(')
@@ -206,7 +248,7 @@ func (s *traverseState) render(buf *bytes.Buffer, ptrs int, v reflect.Value) {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			fmt.Fprintf(buf, "%d", v.Int())
 
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 			fmt.Fprintf(buf, "%d", v.Uint())
 
 		case reflect.Float32, reflect.Float64:
